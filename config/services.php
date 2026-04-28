@@ -41,12 +41,21 @@ return [
         'resolve_secret' => env('SSO_RESOLVE_SECRET'),
         'audience' => env('SSO_AUDIENCE'),
         'issuer' => env('SSO_ISSUER'),
+        'issuers' => array_values(array_filter(array_map(
+            static fn (string $issuer) => trim($issuer),
+            explode(',', (string) env('SSO_ISSUERS', ''))
+        ))),
+        'resolve_url' => env('SSO_RESOLVE_URL'),
         'resolve_endpoint' => env('SSO_RESOLVE_ENDPOINT', '/api/sso/resolve'),
+        'resolve_endpoints' => array_values(array_filter(array_map(
+            static fn (string $endpoint) => trim($endpoint),
+            explode(',', (string) env('SSO_RESOLVE_ENDPOINTS', ''))
+        ))),
         'timeout' => (int) env('SSO_TIMEOUT', 15),
     ],
 
     'pide' => [
-        'base_url' => env('PIDE_BASE_URL'),
+        'base_url' => env('PIDE_BASE_URL') ?: 'https://ws2.pide.gob.pe/Rest/RENIEC/Consultar',
         'token' => env('PIDE_TOKEN'),
         'timeout' => (int) env('PIDE_TIMEOUT', 15),
     ],

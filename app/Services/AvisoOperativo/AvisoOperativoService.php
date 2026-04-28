@@ -6,6 +6,7 @@ use App\DTOs\AuthenticatedUserData;
 use App\Repositories\SqlServerStoredProcedureRepository;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 use Throwable;
 
@@ -44,15 +45,27 @@ class AvisoOperativoService
             ));
 
             return array_slice($items, 0, $limit);
-        } catch (Throwable) {
-            return DB::table('ope.aviso_operativo_servicio')
-                ->where('fecha_reporte', '>=', $from)
-                ->orderByDesc('fecha_reporte')
-                ->orderByDesc('id_aviso_operativo_servicio')
-                ->limit($limit)
-                ->get()
-                ->map(fn ($item) => (array) $item)
-                ->all();
+        } catch (Throwable $throwable) {
+            Log::warning('Fallo la consulta de avisos por procedimiento almacenado, usando fallback.', [
+                'error' => $throwable->getMessage(),
+            ]);
+
+            try {
+                return DB::table('ope.aviso_operativo_servicio')
+                    ->where('fecha_reporte', '>=', $from)
+                    ->orderByDesc('fecha_reporte')
+                    ->orderByDesc('id_aviso_operativo_servicio')
+                    ->limit($limit)
+                    ->get()
+                    ->map(fn ($item) => (array) $item)
+                    ->all();
+            } catch (Throwable $fallbackThrowable) {
+                Log::error('Fallo el fallback de avisos operativos. Se devolvera una lista vacia.', [
+                    'error' => $fallbackThrowable->getMessage(),
+                ]);
+
+                return [];
+            }
         }
     }
 

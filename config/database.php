@@ -112,9 +112,9 @@ return [
             'prefix_indexes' => true,
             'encrypt' => env('DB_ENCRYPT', 'yes'),
             'trust_server_certificate' => env('DB_TRUST_SERVER_CERTIFICATE', false),
-            'options' => array_filter([
-                'APP' => env('DB_APP_NAME', env('APP_NAME', 'Laravel')),
-            ]),
+            // Keep PDO options empty unless using numeric PDO::SQLSRV_ATTR_* constants.
+            // String keys like "APP" cause "invalid attribute designated on PDO object".
+            'options' => [],
         ],
 
     ],

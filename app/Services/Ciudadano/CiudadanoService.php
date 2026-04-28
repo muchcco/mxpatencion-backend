@@ -8,6 +8,7 @@ use App\Services\Pide\PideCitizenNotFoundException;
 use App\Services\Pide\PideService;
 use App\Services\Pide\PideUnavailableException;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use RuntimeException;
 use Throwable;
 
@@ -72,10 +73,11 @@ class CiudadanoService
     public function consultarPide(array $payload, AuthenticatedUserData $advisor, array $context = []): ?array
     {
         try {
-            $ciudadano = $this->pideService->consultarCiudadano(
+            $ciudadanoPide = $this->pideService->consultarCiudadano(
                 (string) $payload['id_tipo_documento'],
                 $payload['numero_documento']
             );
+            $ciudadano = $this->upsertPide($ciudadanoPide);
 
             $this->registrarAuditoriaConsulta(
                 payload: $payload,
@@ -118,6 +120,9 @@ class CiudadanoService
 
     public function registrarManual(array $payload, ?AuthenticatedUserData $advisor = null, array $context = []): array
     {
+        $payload['fuente_origen_inicial'] = 'MANUAL';
+        $payload['fuente_ultima_actualizacion'] = 'MANUAL';
+
         $ciudadano = $this->upsertManual($payload);
 
         if ($advisor !== null) {
@@ -147,26 +152,180 @@ class CiudadanoService
 
     private function upsertManual(array $payload): array
     {
+        $procedurePayload = $this->onlyStoredProcedureCiudadanoFields($payload);
+
         try {
             $result = $this->storedProcedureRepository->select(
                 'ope.usp_upsert_ciudadano',
-                $payload
+                $procedurePayload
             );
 
             if ($result !== []) {
-                return (array) $result[0];
+                $ciudadano = (array) $result[0];
+                $this->actualizarCamposExtendidos(
+                    ciudadano: $ciudadano,
+                    payload: $payload,
+                    preserveFuenteOrigenInicial: true
+                );
+
+                return $this->buscarLocalSinAuditoria(
+                    $payload['id_tipo_documento'],
+                    $payload['numero_documento']
+                ) ?? $ciudadano;
             }
         } catch (Throwable) {
-            $id = DB::table('ope.ciudadano')->insertGetId($payload);
-
-            $ciudadano = DB::table('ope.ciudadano')->where('id_ciudadano', $id)->first();
-
-            if ($ciudadano !== null) {
-                return (array) $ciudadano;
-            }
+            return $this->upsertDirecto($payload, preserveFuenteOrigenInicial: true);
         }
 
         throw new RuntimeException('No fue posible registrar el ciudadano manualmente.');
+    }
+
+    private function upsertPide(array $payload): array
+    {
+        $procedurePayload = $this->onlyStoredProcedureCiudadanoFields($payload);
+
+        try {
+            $result = $this->storedProcedureRepository->select(
+                'ope.usp_upsert_ciudadano',
+                $procedurePayload
+            );
+
+            if ($result !== []) {
+                $ciudadano = (array) $result[0];
+                $this->actualizarCamposExtendidos(
+                    ciudadano: $ciudadano,
+                    payload: $payload,
+                    preserveFuenteOrigenInicial: true
+                );
+
+                return $this->buscarLocalSinAuditoria(
+                    $payload['id_tipo_documento'],
+                    $payload['numero_documento']
+                ) ?? $ciudadano;
+            }
+        } catch (Throwable) {
+            return $this->upsertDirecto($payload, preserveFuenteOrigenInicial: true);
+        }
+
+        throw new RuntimeException('No fue posible registrar el ciudadano obtenido desde PIDE.');
+    }
+
+    private function buscarLocalSinAuditoria(int|string $idTipoDocumento, string $numeroDocumento): ?array
+    {
+        $local = DB::table('ope.ciudadano')
+            ->where('id_tipo_documento', $idTipoDocumento)
+            ->where('numero_documento', $numeroDocumento)
+            ->first();
+
+        return $local !== null ? (array) $local : null;
+    }
+
+    private function actualizarCamposExtendidos(array $ciudadano, array $payload, bool $preserveFuenteOrigenInicial): void
+    {
+        $updates = $this->filtrarColumnasCiudadano($payload);
+        unset($updates['id_tipo_documento'], $updates['numero_documento']);
+
+        if ($updates === []) {
+            return;
+        }
+
+        if ($preserveFuenteOrigenInicial && array_key_exists('fuente_origen_inicial', $updates)) {
+            $fuenteActual = $ciudadano['fuente_origen_inicial'] ?? null;
+
+            if (filled($fuenteActual)) {
+                unset($updates['fuente_origen_inicial']);
+            }
+        }
+
+        if ($updates === []) {
+            return;
+        }
+
+        try {
+            $query = DB::table('ope.ciudadano');
+
+            if (isset($ciudadano['id_ciudadano'])) {
+                $query->where('id_ciudadano', $ciudadano['id_ciudadano']);
+            } else {
+                $query
+                    ->where('id_tipo_documento', $payload['id_tipo_documento'])
+                    ->where('numero_documento', $payload['numero_documento']);
+            }
+
+            $query->update($updates);
+        } catch (Throwable) {
+            // Si la BD aún no tiene las columnas nuevas, no bloquea el flujo principal.
+        }
+    }
+
+    private function upsertDirecto(array $payload, bool $preserveFuenteOrigenInicial): array
+    {
+        $persistablePayload = $this->filtrarColumnasCiudadano($payload);
+        $existing = $this->buscarLocalSinAuditoria(
+            $payload['id_tipo_documento'],
+            $payload['numero_documento']
+        );
+
+        if ($existing !== null) {
+            if ($preserveFuenteOrigenInicial && filled($existing['fuente_origen_inicial'] ?? null)) {
+                unset($persistablePayload['fuente_origen_inicial']);
+            }
+
+            unset($persistablePayload['id_tipo_documento'], $persistablePayload['numero_documento']);
+
+            if ($persistablePayload !== []) {
+                DB::table('ope.ciudadano')
+                    ->where('id_ciudadano', $existing['id_ciudadano'])
+                    ->update($persistablePayload);
+            }
+
+            return $this->obtenerPorId((int) $existing['id_ciudadano']) ?? $existing;
+        }
+
+        $id = DB::table('ope.ciudadano')->insertGetId($persistablePayload);
+        $ciudadano = DB::table('ope.ciudadano')->where('id_ciudadano', $id)->first();
+
+        if ($ciudadano !== null) {
+            return (array) $ciudadano;
+        }
+
+        throw new RuntimeException('No fue posible registrar el ciudadano.');
+    }
+
+    private function onlyStoredProcedureCiudadanoFields(array $payload): array
+    {
+        return array_intersect_key($payload, array_flip([
+            'id_tipo_documento',
+            'numero_documento',
+            'nombres',
+            'apellido_paterno',
+            'apellido_materno',
+            'sexo',
+        ]));
+    }
+
+    private function filtrarColumnasCiudadano(array $payload): array
+    {
+        return array_filter(
+            $payload,
+            fn (mixed $value, string $column): bool => $this->ciudadanoTieneColumna($column),
+            ARRAY_FILTER_USE_BOTH
+        );
+    }
+
+    private function ciudadanoTieneColumna(string $column): bool
+    {
+        static $cache = [];
+
+        if (array_key_exists($column, $cache)) {
+            return $cache[$column];
+        }
+
+        try {
+            return $cache[$column] = Schema::hasColumn('ope.ciudadano', $column);
+        } catch (Throwable) {
+            return $cache[$column] = true;
+        }
     }
 
     private function registrarAuditoriaConsulta(

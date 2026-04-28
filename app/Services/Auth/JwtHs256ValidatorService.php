@@ -12,6 +12,7 @@ class JwtHs256ValidatorService
         $secret = trim((string) config('services.sso.shared_secret'));
         $expectedAudience = (string) config('services.sso.audience');
         $expectedIssuer = trim((string) config('services.sso.issuer'));
+        $expectedIssuers = config('services.sso.issuers', []);
         $resolveSecretConfigured = trim((string) config('services.sso.resolve_secret')) !== '';
 
         if ($secret === '') {
@@ -80,10 +81,24 @@ class JwtHs256ValidatorService
             throw new RuntimeException('El JWT SSO no fue emitido para la audiencia esperada.');
         }
 
-        if ($expectedIssuer !== '' && ($payload['iss'] ?? null) !== $expectedIssuer) {
+        $allowedIssuers = [];
+        if ($expectedIssuer !== '') {
+            $allowedIssuers[] = $expectedIssuer;
+        }
+        if (is_array($expectedIssuers)) {
+            foreach ($expectedIssuers as $issuer) {
+                if (is_string($issuer) && trim($issuer) !== '') {
+                    $allowedIssuers[] = trim($issuer);
+                }
+            }
+        }
+        $allowedIssuers = array_values(array_unique($allowedIssuers));
+
+        if ($allowedIssuers !== [] && ! in_array((string) ($payload['iss'] ?? ''), $allowedIssuers, true)) {
             Log::warning('JWT SSO rechazado por issuer invalido.', [
                 'iss' => $payload['iss'] ?? null,
                 'expected_issuer' => $expectedIssuer,
+                'expected_issuers' => $allowedIssuers,
             ]);
             throw new RuntimeException('El JWT SSO no coincide con el issuer configurado.');
         }

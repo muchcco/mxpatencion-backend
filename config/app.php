@@ -56,7 +56,7 @@ return [
 
     'entity_logo_base_url' => env(
         'ENTITY_LOGO_BASE_URL',
-        'http://macexpress.mac.gob.pe/api/public/entidad-atencion/logo/'
+        'https://macexpress.mac.gob.pe/api/public/entidad-atencion/logo/'
     ),
 
     'frontend_url' => env('FRONTEND_URL', 'http://localhost:4200'),

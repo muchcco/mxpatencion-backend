@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Auth;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Auth\SsoCallbackRequest;
 use App\Http\Resources\AuthenticatedUserResource;
+use App\Services\Auth\ActiveSessionExistsException;
 use App\Services\Auth\SsoAuthenticationService;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -33,6 +34,22 @@ class SsoController extends Controller
             $advisor = $this->ssoAuthenticationService->authenticate(
                 $payload,
                 $request->session()
+            );
+        } catch (ActiveSessionExistsException $exception) {
+            Log::warning('SSO callback rechazado por sesion activa existente.', [
+                'mode' => isset($payload['rt']) ? 'rt' : 'token',
+                'message' => $exception->getMessage(),
+                'session_id' => $request->session()->getId(),
+            ]);
+
+            return $this->errorResponse(
+                'Ya existe una sesion activa para este usuario. Cierra la sesion anterior antes de ingresar nuevamente.',
+                [],
+                409,
+                [
+                    'reason' => 'SESSION_ALREADY_ACTIVE',
+                    'next_action' => 'BLOCK_ACCESS',
+                ]
             );
         } catch (Throwable $throwable) {
             Log::warning('SSO callback fallo durante la autenticacion.', [

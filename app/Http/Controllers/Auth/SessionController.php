@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
 use App\Http\Resources\AuthenticatedUserResource;
+use App\Services\Auth\ActiveSessionExistsException;
 use App\Services\Auth\ProfileService;
 use App\Services\Auth\SessionBootstrapService;
 use Illuminate\Http\Request;
@@ -19,7 +20,19 @@ class SessionController extends Controller
 
     public function me(Request $request)
     {
-        $advisor = $this->sessionBootstrapService->getAuthenticatedAdvisor($request->session());
+        try {
+            $advisor = $this->sessionBootstrapService->assertSessionIsActive($request->session());
+        } catch (ActiveSessionExistsException) {
+            return $this->errorResponse(
+                'Esta cuenta ya tiene una sesion activa en otro dispositivo o ventana.',
+                [],
+                409,
+                [
+                    'reason' => 'SESSION_ALREADY_ACTIVE',
+                    'next_action' => 'BLOCK_ACCESS',
+                ]
+            );
+        }
 
         if ($advisor === null) {
             Log::notice('/api/v1/me sin sesion autenticada.', [

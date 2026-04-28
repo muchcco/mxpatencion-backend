@@ -4,12 +4,14 @@ namespace App\Services\Auth;
 
 use App\DTOs\AuthenticatedUserData;
 use Illuminate\Contracts\Session\Session;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
 
 class SessionBootstrapService
 {
     private const SESSION_KEY = 'authenticated_advisor';
+    private const ACTIVE_SESSION_PREFIX = 'advisor-active-session:';
 
     public function __construct(
         private readonly AdvisorRegionResolverService $advisorRegionResolverService,
@@ -24,6 +26,8 @@ class SessionBootstrapService
         if ($idUsuarioExterno === '') {
             throw new RuntimeException('El JWT SSO no contiene el claim uid o sub.');
         }
+
+        $this->ensureCanOpenSession($idUsuarioExterno, $session);
 
         $email = $this->normalizeNullableString($claims['email'] ?? null);
         $loginUsuario = $email
@@ -62,6 +66,7 @@ class SessionBootstrapService
         $session->regenerate();
 
         $advisor = AuthenticatedUserData::fromSession($payload);
+        $this->markSessionAsActive($advisor, $session);
 
         $this->advisorIdentityService->sync($advisor);
 
@@ -86,10 +91,68 @@ class SessionBootstrapService
         return AuthenticatedUserData::fromSession($payload);
     }
 
+    public function assertSessionIsActive(Session $session): ?AuthenticatedUserData
+    {
+        $advisor = $this->getAuthenticatedAdvisor($session);
+
+        if ($advisor === null) {
+            return null;
+        }
+
+        $activeSessionId = Cache::get($this->activeSessionCacheKey($advisor->idUsuarioExterno));
+
+        if ($activeSessionId !== null && $activeSessionId !== $session->getId()) {
+            throw new ActiveSessionExistsException(
+                'Esta cuenta ya tiene una sesion activa en otro dispositivo o ventana.',
+                (string) $activeSessionId
+            );
+        }
+
+        $this->markSessionAsActive($advisor, $session);
+
+        return $advisor;
+    }
+
     public function destroy(Session $session): void
     {
+        $advisor = $this->getAuthenticatedAdvisor($session);
+
+        if ($advisor !== null) {
+            $activeSessionId = Cache::get($this->activeSessionCacheKey($advisor->idUsuarioExterno));
+
+            if ($activeSessionId === $session->getId()) {
+                Cache::forget($this->activeSessionCacheKey($advisor->idUsuarioExterno));
+            }
+        }
+
         $session->invalidate();
         $session->regenerateToken();
+    }
+
+    private function ensureCanOpenSession(string $idUsuarioExterno, Session $session): void
+    {
+        $activeSessionId = Cache::get($this->activeSessionCacheKey($idUsuarioExterno));
+
+        if ($activeSessionId !== null && $activeSessionId !== $session->getId()) {
+            throw new ActiveSessionExistsException(
+                'Ya existe una sesion activa para este usuario. Cierra la sesion anterior antes de ingresar nuevamente.',
+                (string) $activeSessionId
+            );
+        }
+    }
+
+    private function markSessionAsActive(AuthenticatedUserData $advisor, Session $session): void
+    {
+        Cache::put(
+            $this->activeSessionCacheKey($advisor->idUsuarioExterno),
+            $session->getId(),
+            now()->addMinutes((int) config('session.lifetime', 120))
+        );
+    }
+
+    private function activeSessionCacheKey(string $idUsuarioExterno): string
+    {
+        return self::ACTIVE_SESSION_PREFIX.$idUsuarioExterno;
     }
 
     private function normalizeNullableString(mixed $value): ?string

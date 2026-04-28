@@ -8,6 +8,7 @@ use Illuminate\Auth\AuthenticationException;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Http\Middleware\HandleCors;
 use Illuminate\Http\Request;
 use Illuminate\Session\Middleware\StartSession;
 use Illuminate\Validation\ValidationException;
@@ -22,6 +23,8 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->api(prepend: [
+            // Keep CORS first so even API errors from session/cookie middleware keep CORS headers.
+            HandleCors::class,
             EncryptCookies::class,
             AddQueuedCookiesToResponse::class,
             StartSession::class,
@@ -48,17 +51,20 @@ return Application::configure(basePath: dirname(__DIR__))
                 $errors = $throwable->errors();
             } elseif ($throwable instanceof AuthenticationException) {
                 $status = 401;
+            } elseif ($throwable instanceof \RuntimeException) {
+                // Known business/runtime validation scenarios (e.g. SSO token resolve/validation).
+                $status = 422;
             }
 
             if (method_exists($throwable, 'getStatusCode')) {
                 $status = $throwable->getStatusCode();
             }
 
-            $message = app()->hasDebugModeEnabled()
+            $message = app()->hasDebugModeEnabled() || $throwable instanceof \RuntimeException
                 ? $throwable->getMessage()
                 : 'Ocurrio un error interno al procesar la solicitud.';
 
-            return response()->json([
+            $response = response()->json([
                 'success' => false,
                 'message' => $message,
                 'errors' => $errors,
@@ -66,5 +72,15 @@ return Application::configure(basePath: dirname(__DIR__))
                     'timestamp' => now()->toIso8601String(),
                 ],
             ], $status);
+
+            $origin = (string) $request->headers->get('Origin', '');
+            $allowedOrigins = config('cors.allowed_origins', []);
+            if ($origin !== '' && is_array($allowedOrigins) && in_array($origin, $allowedOrigins, true)) {
+                $response->headers->set('Access-Control-Allow-Origin', $origin);
+                $response->headers->set('Access-Control-Allow-Credentials', 'true');
+                $response->headers->set('Vary', 'Origin');
+            }
+
+            return $response;
         });
     })->create();
